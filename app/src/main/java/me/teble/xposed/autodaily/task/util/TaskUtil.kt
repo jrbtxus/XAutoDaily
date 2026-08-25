@@ -66,6 +66,9 @@ object TaskUtil {
         } else {
             LogUtil.i("检测到任务中断，可能是执行过程中异常退出导致，从上次位置（index: ${status.reqCount}）执行继续执行")
         }
+        // delay 仅作为相邻两次请求之间的间隔，首个请求立即执行，
+        // 避免抢打卡等需要精确触发的场景被 delay 拖慢（首包延迟 1~2 秒）
+        var firstRequest = true
         for (cnt in 0 until repeatNum) {
             // 执行依赖任务
             relays.forEach {
@@ -102,7 +105,10 @@ object TaskUtil {
             val startIdx =
                 if (task.isBasic || task.isRelayTask) 0 else status.reqCount % requests.size
             for (i in startIdx until requests.size) {
-                Thread.sleep((task.delay * 1000).toLong())
+                if (!firstRequest) {
+                    Thread.sleep((task.delay * 1000).toLong())
+                }
+                firstRequest = false
                 val response = taskReqUtil.executor(requests[i])
                 val result = handleCallback(response, task, env)
                 lastMsg = result.msg
