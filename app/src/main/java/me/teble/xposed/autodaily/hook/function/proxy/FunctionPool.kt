@@ -71,6 +71,25 @@ object FunctionPool {
     @Suppress("UNCHECKED_CAST")
     fun <T : BaseFunction> getFunction(functionClass: Class<T>) = functionMap[functionClass] as T
 
+    /**
+     * 预热功能管理器：触发 ByteBuddy 子类化 + 各管理器 init() 反射初始化。
+     * 否则首次在定时任务里用到时才懒初始化，会拖慢首包 1~2 秒。
+     *
+     * 注意：发送消息管理器分 NT/非NT 两个版本（NtSendMessageManager / SendMessageManager），
+     * 不能无脑全 init（会误初始化不匹配版本导致弹「初始化失败」），
+     * 循环里跳过，改为只预热当前 QQ 版本对应的那个。
+     */
+    fun preWarm() {
+        functionMap.values.forEach { function ->
+            if (function is NtSendMessageManager || function is SendMessageManager) {
+                return@forEach
+            }
+            function.isInit
+        }
+        // 只预热当前 QQ 版本对应的发送消息管理器（不影响其它版本的功能）
+        sendMessageManager.isInit
+    }
+
     val favoriteManager by lazy { getFunction(FavoriteManager::class.java) }
 
     val ticketManager by lazy { getFunction(TicketManager::class.java) }

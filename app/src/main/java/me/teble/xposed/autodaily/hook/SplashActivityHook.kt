@@ -28,6 +28,7 @@ import me.teble.xposed.autodaily.hook.base.hostVersionCode
 import me.teble.xposed.autodaily.hook.base.hostVersionName
 import me.teble.xposed.autodaily.hook.base.isInjectClassLoader
 import me.teble.xposed.autodaily.hook.base.modulePath
+import me.teble.xposed.autodaily.hook.function.proxy.FunctionPool
 import me.teble.xposed.autodaily.task.util.ConfigUtil
 import me.teble.xposed.autodaily.task.util.ConfigUtil.loadSaveConf
 import me.teble.xposed.autodaily.task.util.format
@@ -81,6 +82,12 @@ class SplashActivityHook : BaseHook() {
                     resetTasksNextExecTime()
                 }
                 handler.sendEmptyMessageDelayed(AUTO_EXEC, 10_000)
+            }
+            // 预热功能管理器，避免午夜定时任务首次使用时才懒初始化
+            scope.launch {
+                withContext(Dispatchers.IO) {
+                    FunctionPool.preWarm()
+                }
             }
         }
 
