@@ -23,6 +23,16 @@
 
 > 原因：管理器是 `by lazy` 的，首次使用才做 ByteBuddy 子类化 + 反射找方法，午夜首次使用耗时 **~2 秒**。
 
+### 改动 3：时间源改为 NTP（优先腾讯）
+- 文件：`app/src/main/java/me/teble/xposed/autodaily/utils/TimeUtil.kt`
+- 原逻辑：向 `http://www.baidu.com` 发 HTTP 读 `Date` 头 +500ms。
+- 改后：标准 SNTP 协议（UDP 123 端口），服务器列表**腾讯优先**、失败回退阿里云/公共池；用标准 NTP 偏移公式 `((t1-t0)+(t2-t3))/2` 校正，去掉硬编码 +500ms。
+
+### 改动 4：「首次执行补偿」加 1 分钟临近阈值（避免午夜前提前触发）
+- 文件：`app/src/main/java/me/teble/xposed/autodaily/task/util/ConfigUtil.kt`
+- 「首次执行补偿」保留（补跑今天漏跑的），但加临近阈值 `IMMINENT_TRIGGER_MS = 60 * 1000L`（1 分钟）：距下次执行时间 < 1 分钟时不补跑，等真正的 cron 时刻。
+- 效果：0 点任务在午夜前（23:59）启动时，不会在 23:59:59 提前触发，而是等 `task_timer` 在 00:00:00 触发；其它时间启动仍正常补跑。
+
 ---
 
 ## 三、根因分析（发现了什么）
@@ -36,18 +46,19 @@
 
 **结论：服务器根本不慢，6~7 秒全是本地「懒初始化 + delay」造成的。**
 
-### 为什么任务在 23:59:59 就触发（而不是 0:00）
+### 为什么任务在 23:59:59 就触发（而不是 0:00）—— 已修复
 - **不是** `task_timer`（它只在第 0 秒触发，不可能在 23:59:59）。
 - 真正触发链：`SplashActivityHook` 在 splash 后 `handler.sendEmptyMessageDelayed(AUTO_EXEC, 10_000)` → `checkExecuteTask` 里的「**首次执行补偿**」逻辑（`lastExecTime` 为空且下次执行时间不在当天 → 立即执行）。
+- **已修复**：改动 4 给「首次执行补偿」加 1 分钟临近阈值后，0 点任务在午夜前启动不再提前触发，而是等 `task_timer` 在 00:00:00 触发。
 
 ### 其它发现（隐患，未处理）
 1. `GroupSignInManager.syncSignIn` 返回 `parseOIDBPkg == 0`（**oidb 传输层成功**），读了 `respBody.signInWriteRsp.ret.code`（**业务结果**）却**没判断** → 业务失败（未到时间/重复打卡）也报「执行成功」。
 2. **没有失败即重试机制**：发一次就等回包，失败（网络/超时）只打日志「等待重试」，要等下一次触发（10 分钟后的 `task_timer` 或下次 app 启动的 `AUTO_EXEC`）才重跑。`repeat>1` 是「发 N 次」，不是「失败重试」。
-3. 时间源有 **+500ms 硬编码补偿**，模块时钟可能比真实时间**偏快 ~500ms**。
 
 ### 时间来源（`utils/TimeUtil.kt`）
-- `TimeUtil.init()` 向 `http://www.baidu.com` 发请求，读 HTTP `Date` 头 **+500ms**，算 `diff` 存 MMKV。
-- 之后 `cnTimeMillis() = 设备时钟 + diff`（等效「百度时间 + 500ms」为基准，跟随设备时钟漂移）。
+- `TimeUtil.init()` 通过 SNTP（UDP 123）向 NTP 服务器校时，**优先腾讯**（`time1~5.cloud.tencent.com`、`ntp.tencent.com`、`ntp1~5.tencent.com`），失败回退阿里云/公共池。
+- 用标准 NTP 偏移公式 `((t1-t0)+(t2-t3))/2` 算 `diff` 存 MMKV。
+- 之后 `cnTimeMillis() = 设备时钟 + diff`（跟随设备时钟漂移）。
 - cron 匹配用 `GMT+8` 时区 + `cnTimeMillis()`。
 
 ---
@@ -93,15 +104,15 @@ $env:ANDROID_HOME = "D:\Android\Sdk"
 
 ## 七、未完成 / 待办
 
-1. **「首次执行补偿」对整点任务豁免**（关键）：让任务在真正的 0:00 触发，而不是 app 启动时提前补跑。这是「保证 0:00 生效、不提前」的核心改动。
-2. **时间源 +500ms 偏移**：决定保留（偏早对抢排名有利）还是去掉（可能被判为前一天）。
-3. **`syncSignIn` 不判断 `ret.code`**：业务失败会被误报「执行成功」，建议补上 `ret.code == 0` 判断。
-4. **失败重试机制**：当前无「失败即重试」，建议评估是否需要。
-5. `task.delay`：用户已决定**不改**（避免触发 QQ 风控），保持 delay=2。
+1. **`syncSignIn` 不判断 `ret.code`**：业务失败会被误报「执行成功」，建议补上 `ret.code == 0` 判断。
+2. **失败重试机制**：当前无「失败即重试」，建议评估是否需要。
+3. `task.delay`：用户已决定**不改**（避免触发 QQ 风控），保持 delay=2。
+
+> 已解决：①「首次执行补偿」提前触发 → 加 1min 临近阈值（改动 4）；②时间源 +500ms 偏移 → 已改 NTP（改动 3）。
 
 ---
 
 ## 八、其它说明
 
 - 本仓库是 fork，`origin` = `github.com/jrbtxus/XAutoDaily`，**没有 upstream 远程**，同步/推送只到自己的 fork，不会影响主仓库（teble/XAutoDaily）。
-- `local.properties` 已被 `.gitignore` 忽略；`TaskUtil.kt`、`FunctionPool.kt`、`SplashActivityHook.kt` 三处是本次真实代码改动。
+- `local.properties` 已被 `.gitignore` 忽略；本次真实代码改动共 5 个文件：`TaskUtil.kt`、`FunctionPool.kt`、`SplashActivityHook.kt`、`TimeUtil.kt`、`ConfigUtil.kt`。

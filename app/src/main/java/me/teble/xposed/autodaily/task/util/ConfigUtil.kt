@@ -240,6 +240,9 @@ object ConfigUtil {
         return meta
     }
 
+    /** 临近触发阈值：距下次执行时间小于该值时，不进行「首次执行补偿」，等真正的 cron 时刻 */
+    private const val IMMINENT_TRIGGER_MS = 60 * 1000L
+
     fun checkExecuteTask(task: Task): Boolean {
         val enabled = task.enable
         if (!enabled) {
@@ -263,8 +266,11 @@ object ConfigUtil {
                 Date(time.time + TimeUtil.offsetTime).format()
             }
         lastExecTime ?: let {
-            // 第一次执行任务，如果下次执行时间不在当天，则立即执行
-            if (task.nextShouldExecTime?.substring(0, 10) != now.format().substring(0, 10)) {
+            // 第一次执行任务：如果下次执行时间不在当天（今天漏跑），立即补跑。
+            // 但若下次执行时间已临近（例如 0 点任务在午夜前启动），则不立即补跑，等真正的 cron 时刻。
+            val nextDate = parseDate(task.nextShouldExecTime)
+            val imminent = nextDate != null && (nextDate.time - now.time) < IMMINENT_TRIGGER_MS
+            if (task.nextShouldExecTime?.substring(0, 10) != now.format().substring(0, 10) && !imminent) {
                 return true
             }
         }
