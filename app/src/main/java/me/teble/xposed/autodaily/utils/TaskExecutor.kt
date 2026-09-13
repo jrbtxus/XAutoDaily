@@ -181,6 +181,9 @@ object TaskExecutor {
             ) {
                 ConfigUtil.checkUpdate(false)
             }
+            // MSF 长连接探活：每天 23:55:55 提前检测，
+            // 若协议请求无响应则提醒用户重启 QQ，避免 00:00 签到任务整晚失败
+            MsfProbe.schedule()
             LogUtil.d("任务调度器存在任务：${scheduler.taskTable.ids}")
         }
     }
