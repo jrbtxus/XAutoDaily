@@ -82,14 +82,21 @@ jobs:
         run: |
           find app/build/outputs -type f -name '*.apk' -exec ls -lh {} \; || true
 
-      - name: 上传 APK（debug + release）
+      - name: 上传 debug APK
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: XAutoDaily-${{ github.sha }}
-          path: |
-            app/build/outputs/apk/debug/*.apk
-            app/build/outputs/apk/release/*.apk
+          name: XAutoDaily-debug-${{ github.sha }}
+          path: app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: 上传 release APK
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: XAutoDaily-release-${{ github.sha }}
+          path: app/build/outputs/apk/release/*.apk
           if-no-files-found: error
           retention-days: 14
 
