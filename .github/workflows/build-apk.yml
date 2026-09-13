@@ -70,24 +70,26 @@ jobs:
           restore-keys: |
             gradle-${{ runner.os }}-
 
-      - name: 编译 debug APK
+      - name: 编译 debug + release APK
         env:
           GRADLE_OPTS: "-Dorg.gradle.jvmargs=-Xmx3g -XX:MaxMetaspaceSize=1g -Dfile.encoding=UTF-8"
         run: |
           chmod +x gradlew
-          ./gradlew :app:assembleDebug --stacktrace --no-daemon
+          ./gradlew :app:assembleDebug :app:assembleRelease --stacktrace --no-daemon
 
       - name: 列出产物
         if: always()
         run: |
           find app/build/outputs -type f -name '*.apk' -exec ls -lh {} \; || true
 
-      - name: 上传 APK
+      - name: 上传 APK（debug + release）
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: XAutoDaily-debug-${{ github.sha }}
-          path: app/build/outputs/apk/debug/*.apk
+          name: XAutoDaily-${{ github.sha }}
+          path: |
+            app/build/outputs/apk/debug/*.apk
+            app/build/outputs/apk/release/*.apk
           if-no-files-found: error
           retention-days: 14
 

@@ -10,7 +10,6 @@ import me.teble.xposed.autodaily.hook.function.BaseSendMessage
 import me.teble.xposed.autodaily.hook.utils.NtUidUtil
 import me.teble.xposed.autodaily.hook.utils.QApplicationUtil.appRuntime
 import me.teble.xposed.autodaily.utils.LogUtil
-import me.teble.xposed.autodaily.utils.getMethods
 import me.teble.xposed.autodaily.utils.invoke
 import me.teble.xposed.autodaily.utils.new
 import java.lang.reflect.Method
@@ -29,19 +28,41 @@ open class NtSendMessageManager : BaseSendMessage(
     private var generateMsgUniqueIdMethod: Method? = null
     // lower nt qq
     private var getMsgUniqueIdMethod: Method? = null
+    // IKernelMsgService.sendMsg（同样声明在接口上，需用原生 Class.getMethods() 才能找到）
+    private var sendMsgMethod: Method? = null
 
     override fun init() {
         val kernelService = appRuntime.getRuntimeService(loadAs("com.tencent.qqnt.kernel.api.IKernelService"), "all")
         msgService = kernelService.invoke("getMsgService")!!
-        val msgServiceMethods = msgService.getMethods(false)
+        // 注意：msgService 是 IKernelMsgService 接口的 JNI 实现，方法声明在接口上。
+        // hutool 的 ReflectUtil.getMethodsDirectly 第三参 withSuperInterface 被封装写死为 false，
+        // 永不遍历接口，必须用原生 Class.getMethods()（返回公共方法，含父类与接口继承）。
+        val msgServiceMethods = msgService.javaClass.methods
         generateMsgUniqueIdMethod = msgServiceMethods.firstOrNull {
-            it.returnType == Long::class.javaObjectType
-                    && it.parameterTypes.size == 1 && it.parameterTypes[0] == Int::class.java
+            (it.returnType == Long::class.javaObjectType || it.returnType == Long::class.javaPrimitiveType)
+                    && it.parameterTypes.size == 1
+                    && (it.parameterTypes[0] == Int::class.java || it.parameterTypes[0] == Int::class.javaPrimitiveType)
         }
         generateMsgUniqueIdMethod ?: run {
             getMsgUniqueIdMethod = msgServiceMethods.firstOrNull {
-                it.returnType == Long::class.javaObjectType && it.parameterTypes.isEmpty()
+                (it.returnType == Long::class.javaObjectType || it.returnType == Long::class.javaPrimitiveType)
+                        && it.parameterTypes.isEmpty()
             }
+        }
+        sendMsgMethod = msgServiceMethods.firstOrNull {
+            it.name == "sendMsg" && it.parameterTypes.size == 5
+        }
+        if (generateMsgUniqueIdMethod == null && getMsgUniqueIdMethod == null) {
+            // 找不到方法时显式失败（而非等到 sendTextMessage 里 NPE），
+            // 并把 msgService 的方法列表打出来，便于定位真实签名
+            LogUtil.i("NtSendMessageManager init 失败：未找到 generateMsgUniqueId/getMsgUniqueId，msgService 方法列表：")
+            msgServiceMethods.forEach { LogUtil.i("    -> $it") }
+            throw RuntimeException("没有找到发送消息生成 msgUniqueId 的方法")
+        }
+        if (sendMsgMethod == null) {
+            LogUtil.i("NtSendMessageManager init 失败：未找到 sendMsg，msgService 方法列表：")
+            msgServiceMethods.forEach { LogUtil.i("    -> $it") }
+            throw RuntimeException("没有找到 sendMsg 方法")
         }
 
         msgUtilApi = QRoute.api(loadAs("com.tencent.qqnt.msg.api.IMsgUtilApi"))
@@ -70,8 +91,9 @@ open class NtSendMessageManager : BaseSendMessage(
 
         val countDownLatch = CountDownLatch(1)
 
-        msgService.invoke(
-            "sendMsg",
+        // 直接用反射调用接口方法（hutool 的 invoke 不遍历接口，会找不到 sendMsg）
+        sendMsgMethod!!.invoke(
+            msgService,
             msgUniqueId,
             contact,
             msgElements,
@@ -88,7 +110,8 @@ open class NtSendMessageManager : BaseSendMessage(
 
     private fun getMsgUniqueId(chatType: Int): Long {
         val ret = generateMsgUniqueIdMethod?.invoke(msgService, chatType)
-            ?: getMsgUniqueIdMethod!!.invoke(msgService)
+            ?: getMsgUniqueIdMethod?.invoke(msgService)
+            ?: throw RuntimeException("生成 msgUniqueId 的方法未初始化")
         return ret as Long
     }
 }
